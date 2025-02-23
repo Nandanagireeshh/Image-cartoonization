@@ -1,66 +1,168 @@
-from flask import Flask, request, jsonify, render_template, send_file
-import cv2
-import numpy as np
 import os
-from io import BytesIO
+import io
+import uuid
+import sys
+import yaml
+import traceback
+
+with open('./config.yaml', 'r') as fd:
+    opts = yaml.safe_load(fd)
+
+sys.path.insert(0, './white_box_cartoonizer/')
+
+import cv2
+from flask import Flask, render_template, make_response, flash
+import flask
 from PIL import Image
+import numpy as np
+import skvideo.io
+if opts['colab-mode']:
+    from flask_ngrok import run_with_ngrok  # to run the application on colab using ngrok
+
+from cartoonize import WB_Cartoonize
+
+if not opts['run_local']:
+    if 'GOOGLE_APPLICATION_CREDENTIALS' in os.environ:
+        from gcloud_utils import upload_blob, generate_signed_url, delete_blob, download_video
+    else:
+        raise Exception("GOOGLE_APPLICATION_CREDENTIALS not set in environment variables")
+    from video_api import api_request
+    # Algorithmia (GPU inference)
+    import Algorithmia
 
 app = Flask(__name__)
+if opts['colab-mode']:
+    run_with_ngrok(app)  # starts ngrok when the app is run
 
-UPLOAD_FOLDER = 'uploads'
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+app.config['UPLOAD_FOLDER_VIDEOS'] = 'static/uploaded_videos'
+app.config['CARTOONIZED_FOLDER'] = 'static/cartoonized_images'
+app.config['INTERMEDIATE_FOLDER'] = os.path.join(app.config['CARTOONIZED_FOLDER'], 'intermediate')
+os.makedirs(app.config['INTERMEDIATE_FOLDER'], exist_ok=True)
+
+app.config['OPTS'] = opts
+
+## Init Cartoonizer and load its weights 
+wb_cartoonizer = WB_Cartoonize(os.path.abspath("white_box_cartoonizer/saved_models/"), opts['gpu'])
+
+def convert_bytes_to_image(img_bytes):
+    """Convert bytes to numpy array
+
+    Args:
+        img_bytes (bytes): Image bytes read from flask.
+
+    Returns:
+        [numpy array]: Image numpy array
+    """
+    
+    pil_image = Image.open(io.BytesIO(img_bytes))
+    if pil_image.mode=="RGBA":
+        image = Image.new("RGB", pil_image.size, (255,255,255))
+        image.paste(pil_image, mask=pil_image.split()[3])
+    else:
+        image = pil_image.convert('RGB')
+    
+    image = np.array(image)
+    return image
 
 @app.route('/')
-def home():
-    return render_template('index.html')  # Render the HTML page
-
-@app.route('/cartoonize', methods=['POST'])
+@app.route('/cartoonize', methods=["POST", "GET"])
 def cartoonize():
-    if 'image' not in request.files:
-        return jsonify({"error": "No file uploaded"}), 400
+    opts = app.config['OPTS']
+    if flask.request.method == 'POST':
+        try:
+            if flask.request.files.get('image'):
+                img = flask.request.files["image"].read()
+                ## Read Image and convert to PIL (RGB) if RGBA convert appropriately
+                image = convert_bytes_to_image(img)
+                img_name = str(uuid.uuid4())
+                
+                # Get intermediate steps including final cartoon image
+                steps = wb_cartoonizer.infer(image, return_steps=True)
+                
+                # Save each intermediate step to disk
+                step_names = {}
+                for key, img_out in steps.items():
+                    save_path = os.path.join(app.config['INTERMEDIATE_FOLDER'], f"{img_name}_{key}.jpg")
+                    cv2.imwrite(save_path, cv2.cvtColor(img_out, cv2.COLOR_RGB2BGR))
+                    # For local running, we use the relative path
+                    step_names[key] = save_path
 
-    file = request.files['image']
-    if file.filename == '':
-        return jsonify({"error": "No file selected"}), 400
+                # Use the final cartoon image for the main display
+                cartoonized_img_name = os.path.join(app.config['CARTOONIZED_FOLDER'], img_name + ".jpg")
+                cv2.imwrite(cartoonized_img_name, cv2.cvtColor(steps['cartoon'], cv2.COLOR_RGB2BGR))
+                
+                if not opts["run_local"]:
+                    # Upload to bucket
+                    output_uri = upload_blob("cartoonized_images", cartoonized_img_name, img_name + ".jpg", content_type='image/jpg')
+                    # Delete locally stored cartoonized image
+                    os.system("rm " + cartoonized_img_name)
+                    cartoonized_img_name = generate_signed_url(output_uri)
+                    
+                # Pass intermediate step URLs to template
+                return render_template("index_cartoonized.html", 
+                                       cartoonized_image=cartoonized_img_name,
+                                       intermediate_images=step_names)
 
-    # Save uploaded image
-    image_path = os.path.join(UPLOAD_FOLDER, file.filename)
-    file.save(image_path)
+            if flask.request.files.get('video'):
+                filename = str(uuid.uuid4()) + ".mp4"
+                video = flask.request.files["video"]
+                original_video_path = os.path.join(app.config['UPLOAD_FOLDER_VIDEOS'], filename)
+                video.save(original_video_path)
+                
+                modified_video_path = os.path.join(app.config['UPLOAD_FOLDER_VIDEOS'], filename.split(".")[0] + "_modified.mp4")
+                
+                ## Fetch Metadata and set frame rate
+                file_metadata = skvideo.io.ffprobe(original_video_path)
+                original_frame_rate = None
+                if 'video' in file_metadata:
+                    if '@r_frame_rate' in file_metadata['video']:
+                        original_frame_rate = file_metadata['video']['@r_frame_rate']
 
-    # Read the image
-    img = cv2.imread(image_path)
+                if opts['original_frame_rate']:
+                    output_frame_rate = original_frame_rate
+                else:
+                    output_frame_rate = opts['output_frame_rate']    
 
-    # Ensure image was read successfully
-    if img is None:
-        return jsonify({"error": "Failed to process the image"}), 500
+                output_frame_rate_number = int(output_frame_rate.split('/')[0])
+                width_resize = opts['resize-dim']
 
-    # Convert to grayscale
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                if opts['trim-video']:
+                    time_limit = opts['trim-video-length']
+                    if opts['original_resolution']:
+                        os.system("ffmpeg -hide_banner -loglevel warning -ss 0 -i '{}' -t {} -filter:v scale=-1:-2 -r {} -c:a copy '{}'".format(os.path.abspath(original_video_path), time_limit, output_frame_rate_number, os.path.abspath(modified_video_path)))
+                    else:
+                        os.system("ffmpeg -hide_banner -loglevel warning -ss 0 -i '{}' -t {} -filter:v scale={}:-2 -r {} -c:a copy '{}'".format(os.path.abspath(original_video_path), time_limit, width_resize, output_frame_rate_number, os.path.abspath(modified_video_path)))
+                else:
+                    if opts['original_resolution']:
+                       os.system("ffmpeg -hide_banner -loglevel warning -ss 0 -i '{}' -filter:v scale=-1:-2 -r {} -c:a copy '{}'".format(os.path.abspath(original_video_path), output_frame_rate_number, os.path.abspath(modified_video_path)))
+                    else:
+                        os.system("ffmpeg -hide_banner -loglevel warning -ss 0 -i '{}' -filter:v scale={}:-2 -r {} -c:a copy '{}'".format(os.path.abspath(original_video_path), width_resize, output_frame_rate_number, os.path.abspath(modified_video_path)))
+                
+                audio_file_path = os.path.join(app.config['UPLOAD_FOLDER_VIDEOS'], filename.split(".")[0] + "_audio_modified.mp4")
+                os.system("ffmpeg -hide_banner -loglevel warning -i '{}' -map 0:1 -vn -acodec copy -strict -2  '{}'".format(os.path.abspath(modified_video_path), os.path.abspath(audio_file_path)))
 
-    # Apply median blur
-    gray_blurred = cv2.medianBlur(gray, 7)
+                if opts["run_local"]:
+                    cartoon_video_path = wb_cartoonizer.process_video(modified_video_path, output_frame_rate)
+                else:
+                    data_uri = upload_blob("processed_videos_cartoonize", modified_video_path, filename, content_type='video/mp4', algo_unique_key='cartoonizeinput')
+                    response = api_request(data_uri)
+                    delete_blob("processed_videos_cartoonize", filename)
+                    cartoon_video_path = download_video('cartoonized_videos', os.path.basename(response['output_uri']), os.path.join(app.config['UPLOAD_FOLDER_VIDEOS'], filename.split(".")[0] + "_cartoon.mp4"))
+                
+                final_cartoon_video_path = os.path.join(app.config['UPLOAD_FOLDER_VIDEOS'], filename.split(".")[0] + "_cartoon_audio.mp4")
+                os.system("ffmpeg -hide_banner -loglevel warning -i '{}' -i '{}' -codec copy -shortest '{}'".format(os.path.abspath(cartoon_video_path), os.path.abspath(audio_file_path), os.path.abspath(final_cartoon_video_path)))
+                os.system("rm {} {} {} {}".format(original_video_path, modified_video_path, audio_file_path, cartoon_video_path))
+                return render_template("index_cartoonized.html", cartoonized_video=final_cartoon_video_path)
+        
+        except Exception:
+            print(traceback.print_exc())
+            flash("Our server hiccuped :/ Please upload another file! :)")
+            return render_template("index_cartoonized.html")
+    else:
+        return render_template("index_cartoonized.html")
 
-    # Detect edges using adaptive thresholding
-    edges = cv2.adaptiveThreshold(
-        gray_blurred, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY, 9, 9
-    )
-
-    # Apply bilateral filter to smooth colors
-    color = cv2.bilateralFilter(img, 9, 300, 300)
-
-    # Combine edges and smoothed color
-    cartoon = cv2.bitwise_and(color, color, mask=edges)
-
-    # Convert result to PIL Image and save to in-memory file
-    cartoon_image = Image.fromarray(cv2.cvtColor(cartoon, cv2.COLOR_BGR2RGB))
-    img_io = BytesIO()
-    cartoon_image.save(img_io, 'JPEG')
-    img_io.seek(0)
-
-    # Remove the uploaded file to keep the folder clean
-    os.remove(image_path)
-
-    return send_file(img_io, mimetype='image/jpeg')
-
-if __name__ == '__main__':
-    app.run(debug=True)
+if __name__ == "__main__":
+    if opts['colab-mode']:
+        app.run()
+    else:
+        app.run(debug=False, host='127.0.0.1', port=int(os.environ.get('PORT', 8080)))
