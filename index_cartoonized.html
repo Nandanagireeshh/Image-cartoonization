@@ -1,165 +1,64 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <script async src="https://www.googletagmanager.com/gtag/js?id=UA-173468417-1"></script>
-    <script>
-    window.dataLayer = window.dataLayer || [];
-    function gtag(){dataLayer.push(arguments);}
-    gtag('js', new Date());
-
-    gtag('config', 'UA-173468417-1');
-    </script>
-
-    <meta charset="utf-8" />
-    <meta http-equiv="X-UA-Compatible" content="IE=edge">
-
-    
-    <title>Cartoonizer</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/semantic-ui@2.3.3/dist/semantic.min.css">
-    <script
-        src="https://code.jquery.com/jquery-3.1.1.min.js"
-        integrity="sha256-hVVnYaiADRTO2PzUGmuLJr8BLUSjGIZsDYGmIJLv2b8="
-        crossorigin="anonymous">
-    </script>
-    <script src="https://cdn.jsdelivr.net/npm/semantic-ui@2.3.3/dist/semantic.min.js"></script>
-    <script async src="https://platform.twitter.com/widgets.js" charset="utf-8"></script>
-    <style>
-        html {
-        box-sizing: border-box;
-        }
-        *, *:before, *:after {
-        box-sizing: inherit;
-        }
-        body{
-            background-color: whitesmoke;
-        }
-
-        iframe[src*=youtube] {
-                    display: block;
-                    margin: 0 auto;
-                    max-width: 100%;
-                    padding-bottom: 10px;
-                }
-    </style>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Image Cartoonization</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.0/css/bootstrap.min.css">
 </head>
-
 <body>
-        <div id="loader" class="ui disabled dimmer">
-                <div class="ui text loader">Preparing your cartoon! May take an extra few seconds for video :)</div>
-              </div>
-
-<div class='ui padded centered grid'>
-    <!-- Messaging system -->
-    <div class="row">
-        <div class="center aligned column">
-            {% with messages = get_flashed_messages(with_categories=true) %}
-                {% if messages %}
-                    <div style="height:10%; display:flex; align-items: center; justify-content: center">
-                        {% for category, message in messages %}
-                            {% if category == error%}
-                                <h3 style="color:red">{{ message }}</h3>
-                            {% else %}
-                                <h3 style="color:green">{{ message }}</h3>
-                            {% endif %}
-                        {% endfor %}
-                    </div>
-                {% endif %}
-            {% endwith %}
+    <div class="container mt-4 text-center">
+        <h1 class="mb-4">Cartoonize Your Image</h1>
+        
+        <!-- Upload Section -->
+        <form action="/cartoonize" method="post" enctype="multipart/form-data">
+            <div class="mb-3">
+                <label for="imageUpload" class="form-label">Upload an Image</label>
+                <input class="form-control" type="file" id="imageUpload" name="image" accept="image/*" required>
+            </div>
+            <button type="submit" class="btn btn-primary">Cartoonize</button>
+        </form>
+        
+        <!-- Cartoonized Image Output -->
+        {% if cartoonized_image %}
+        <div class="mt-4">
+            <h3>Cartoonized Image</h3>
+            <img src="{{ cartoonized_image }}" class="img-fluid rounded shadow" alt="Cartoonized Image">
         </div>
-    </div>
-
-    <!-- Heading of the page -->
-    <div class="row">
-        <div class='center aligned column'>
-            <h1>Cartoon Maker Image</h1>
-        </div>
-    </div>
-
-    <!-- Submission form -->
-    <div class="row">
-        <div class='center aligned column'>
-            <form id='formsubmit' method="post" action="cartoonize" enctype = "multipart/form-data">
-
-                <div class="ui buttons">
-                    <div id='uploadimage' class="ui button" style="align-items: center;">
-                        <i class="image icon"></i>
-                        Image
-                    </div>
+        {% endif %}
+        
+        <!-- Intermediate Steps Display -->
+        {% if intermediate_images %}
+        <div class="mt-4">
+            <h3>Transformation Steps</h3>
+            <div class="row">
+                {% for step, image_url in intermediate_images.items() %}
+                <div class="col-md-4 mb-3">
+                    <h5>{{ step }}</h5>
+                    <img src="{{ image_url }}" class="img-fluid rounded shadow" alt="{{ step }}">
                 </div>
-
-                <input type='file' id='hiddeninputfile' accept="image/*" name = 'image' style="display: none"/>
-            </form>
+                {% endfor %}
+            </div>
         </div>
-    </div>
-
-    {%if cartoonized_image%}
-    <div class="row">
-        <div class="column">
-            <div class="ui centered grid">
-                <div class="row">
-                    <div class="center aligned column">
-                        <div class="ui centered card">
-                            <div class="image">
-                                <img src="{{ cartoonized_image }}">
-                            </div>
-                        </div>
-                    </div>
+        {% endif %}
+        
+        <!-- Sample Image Section -->
+        <div class="mt-5">
+            <h3>Sample Cartoonized Images</h3>
+            <div class="row">
+                <div class="col-md-4">
+                    <img src="static/sample1.jpg" class="img-fluid rounded shadow" alt="Sample 1">
+                </div>
+                <div class="col-md-4">
+                    <img src="static/sample2.jpg" class="img-fluid rounded shadow" alt="Sample 2">
+                </div>
+                <div class="col-md-4">
+                    <img src="static/sample3.jpg" class="img-fluid rounded shadow" alt="Sample 3">
                 </div>
             </div>
         </div>
     </div>
-    {%endif%}
 
-    <div class="ui divider"></div>
-
-    <div class="row">
-        <div class="five wide column">
-            <img class="ui medium centered image" src="/static/sample_images/emma2.jpg">
-        </div>
-        <div class="five wide column">
-            <img class="ui medium centered image" src="/static/sample_images/emma2_cartoonized.jpg">
-        </div>
-    </div>
-
-    <div class="row">
-        <div class="five wide column">
-            <img class="ui medium centered image" src="/static/sample_images/spice.jpeg">
-        </div>
-        <div class="five wide column">
-            <img class="ui medium centered image" src="/static/sample_images/spice_cartoonized.jpeg">
-        </div>
-    </div>
-
-    <div class="row">
-        <div class="five wide column">
-            <img class="ui medium centered image" src="/static/sample_images/cake.jpeg">
-        </div>
-        <div class="five wide column">
-            <img class="ui medium centered image" src="/static/sample_images/cake_cartoonized.jpeg">
-        </div>
-    </div>
-
-    <div class="row">
-        <div class="center aligned column">
-            <h3><i class="copyright outline icon"></i> Cartoon Maker</h3>
-        </div>
-    </div>
-
-</div>
-
-<script>
-    $('.ui.accordion').accordion();
-
-    $("#uploadimage").on("click", function() {
-        $('#hiddeninputfile').click();
-    });
-
-    document.getElementById("hiddeninputfile").onchange = function() {
-        $('#loader').removeClass('disabled').addClass('active');
-        document.getElementById("formsubmit").submit();
-    };
-</script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/bootstrap/5.3.0/js/bootstrap.bundle.min.js"></script>
 </body>
 </html>
