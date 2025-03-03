@@ -1,10 +1,6 @@
-"""
-Code copyrights are with: https://github.com/SystemErrorWang/White-box-Cartoonization/
 
-To adapt the code with tensorflow v2 changes obtained from: https://github.com/steubk/White-box-Cartoonization 
-"""
 try:
-    import tensorflow.compat.v1 as tf
+    import tensorflow.compat.v1 as tf # type: ignore
 except ImportError:
     import tensorflow as tf
 
@@ -74,7 +70,7 @@ def fast_guided_filter(lr_x, lr_y, hr_x, r=1, eps=1e-8):
 
 if __name__ == '__main__':
     import cv2
-    from tqdm import tqdm
+    from tqdm import tqdm # type: ignore
 
     input_photo = tf.placeholder(tf.float32, [1, None, None, 3])
     #input_superpixel = tf.placeholder(tf.float32, [16, 256, 256, 3])

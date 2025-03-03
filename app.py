@@ -15,26 +15,22 @@ from flask import Flask, render_template, make_response, flash
 import flask
 from PIL import Image
 import numpy as np
-import skvideo.io
+
 if opts['colab-mode']:
-    from flask_ngrok import run_with_ngrok  # to run the application on colab using ngrok
+    from flask_ngrok import run_with_ngrok  # type: ignore # to run the application on colab using ngrok
 
 from cartoonize import WB_Cartoonize
 
 if not opts['run_local']:
     if 'GOOGLE_APPLICATION_CREDENTIALS' in os.environ:
-        from gcloud_utils import upload_blob, generate_signed_url, delete_blob, download_video
+        from gcloud_utils import upload_blob, generate_signed_url, delete_blob
     else:
         raise Exception("GOOGLE_APPLICATION_CREDENTIALS not set in environment variables")
-    from video_api import api_request
-    # Algorithmia (GPU inference)
-    import Algorithmia
 
 app = Flask(__name__)
 if opts['colab-mode']:
     run_with_ngrok(app)  # starts ngrok when the app is run
 
-app.config['UPLOAD_FOLDER_VIDEOS'] = 'static/uploaded_videos'
 app.config['CARTOONIZED_FOLDER'] = 'static/cartoonized_images'
 app.config['INTERMEDIATE_FOLDER'] = os.path.join(app.config['CARTOONIZED_FOLDER'], 'intermediate')
 os.makedirs(app.config['INTERMEDIATE_FOLDER'], exist_ok=True)
@@ -84,7 +80,6 @@ def cartoonize():
                 for key, img_out in steps.items():
                     save_path = os.path.join(app.config['INTERMEDIATE_FOLDER'], f"{img_name}_{key}.jpg")
                     cv2.imwrite(save_path, cv2.cvtColor(img_out, cv2.COLOR_RGB2BGR))
-                    # For local running, we use the relative path
                     step_names[key] = save_path
 
                 # Use the final cartoon image for the main display
@@ -92,67 +87,13 @@ def cartoonize():
                 cv2.imwrite(cartoonized_img_name, cv2.cvtColor(steps['cartoon'], cv2.COLOR_RGB2BGR))
                 
                 if not opts["run_local"]:
-                    # Upload to bucket
                     output_uri = upload_blob("cartoonized_images", cartoonized_img_name, img_name + ".jpg", content_type='image/jpg')
-                    # Delete locally stored cartoonized image
                     os.system("rm " + cartoonized_img_name)
                     cartoonized_img_name = generate_signed_url(output_uri)
-                    
-                # Pass intermediate step URLs to template
+                
                 return render_template("index_cartoonized.html", 
                                        cartoonized_image=cartoonized_img_name,
                                        intermediate_images=step_names)
-
-            if flask.request.files.get('video'):
-                filename = str(uuid.uuid4()) + ".mp4"
-                video = flask.request.files["video"]
-                original_video_path = os.path.join(app.config['UPLOAD_FOLDER_VIDEOS'], filename)
-                video.save(original_video_path)
-                
-                modified_video_path = os.path.join(app.config['UPLOAD_FOLDER_VIDEOS'], filename.split(".")[0] + "_modified.mp4")
-                
-                ## Fetch Metadata and set frame rate
-                file_metadata = skvideo.io.ffprobe(original_video_path)
-                original_frame_rate = None
-                if 'video' in file_metadata:
-                    if '@r_frame_rate' in file_metadata['video']:
-                        original_frame_rate = file_metadata['video']['@r_frame_rate']
-
-                if opts['original_frame_rate']:
-                    output_frame_rate = original_frame_rate
-                else:
-                    output_frame_rate = opts['output_frame_rate']    
-
-                output_frame_rate_number = int(output_frame_rate.split('/')[0])
-                width_resize = opts['resize-dim']
-
-                if opts['trim-video']:
-                    time_limit = opts['trim-video-length']
-                    if opts['original_resolution']:
-                        os.system("ffmpeg -hide_banner -loglevel warning -ss 0 -i '{}' -t {} -filter:v scale=-1:-2 -r {} -c:a copy '{}'".format(os.path.abspath(original_video_path), time_limit, output_frame_rate_number, os.path.abspath(modified_video_path)))
-                    else:
-                        os.system("ffmpeg -hide_banner -loglevel warning -ss 0 -i '{}' -t {} -filter:v scale={}:-2 -r {} -c:a copy '{}'".format(os.path.abspath(original_video_path), time_limit, width_resize, output_frame_rate_number, os.path.abspath(modified_video_path)))
-                else:
-                    if opts['original_resolution']:
-                       os.system("ffmpeg -hide_banner -loglevel warning -ss 0 -i '{}' -filter:v scale=-1:-2 -r {} -c:a copy '{}'".format(os.path.abspath(original_video_path), output_frame_rate_number, os.path.abspath(modified_video_path)))
-                    else:
-                        os.system("ffmpeg -hide_banner -loglevel warning -ss 0 -i '{}' -filter:v scale={}:-2 -r {} -c:a copy '{}'".format(os.path.abspath(original_video_path), width_resize, output_frame_rate_number, os.path.abspath(modified_video_path)))
-                
-                audio_file_path = os.path.join(app.config['UPLOAD_FOLDER_VIDEOS'], filename.split(".")[0] + "_audio_modified.mp4")
-                os.system("ffmpeg -hide_banner -loglevel warning -i '{}' -map 0:1 -vn -acodec copy -strict -2  '{}'".format(os.path.abspath(modified_video_path), os.path.abspath(audio_file_path)))
-
-                if opts["run_local"]:
-                    cartoon_video_path = wb_cartoonizer.process_video(modified_video_path, output_frame_rate)
-                else:
-                    data_uri = upload_blob("processed_videos_cartoonize", modified_video_path, filename, content_type='video/mp4', algo_unique_key='cartoonizeinput')
-                    response = api_request(data_uri)
-                    delete_blob("processed_videos_cartoonize", filename)
-                    cartoon_video_path = download_video('cartoonized_videos', os.path.basename(response['output_uri']), os.path.join(app.config['UPLOAD_FOLDER_VIDEOS'], filename.split(".")[0] + "_cartoon.mp4"))
-                
-                final_cartoon_video_path = os.path.join(app.config['UPLOAD_FOLDER_VIDEOS'], filename.split(".")[0] + "_cartoon_audio.mp4")
-                os.system("ffmpeg -hide_banner -loglevel warning -i '{}' -i '{}' -codec copy -shortest '{}'".format(os.path.abspath(cartoon_video_path), os.path.abspath(audio_file_path), os.path.abspath(final_cartoon_video_path)))
-                os.system("rm {} {} {} {}".format(original_video_path, modified_video_path, audio_file_path, cartoon_video_path))
-                return render_template("index_cartoonized.html", cartoonized_video=final_cartoon_video_path)
         
         except Exception:
             print(traceback.print_exc())
