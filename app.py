@@ -21,12 +21,6 @@ if opts['colab-mode']:
 
 from cartoonize import WB_Cartoonize
 
-if not opts['run_local']:
-    if 'GOOGLE_APPLICATION_CREDENTIALS' in os.environ:
-        from gcloud_utils import upload_blob, generate_signed_url, delete_blob
-    else:
-        raise Exception("GOOGLE_APPLICATION_CREDENTIALS not set in environment variables")
-
 app = Flask(__name__)
 if opts['colab-mode']:
     run_with_ngrok(app)  # starts ngrok when the app is run
@@ -86,10 +80,10 @@ def cartoonize():
                 cartoonized_img_name = os.path.join(app.config['CARTOONIZED_FOLDER'], img_name + ".jpg")
                 cv2.imwrite(cartoonized_img_name, cv2.cvtColor(steps['cartoon'], cv2.COLOR_RGB2BGR))
                 
-                if not opts["run_local"]:
-                    output_uri = upload_blob("cartoonized_images", cartoonized_img_name, img_name + ".jpg", content_type='image/jpg')
-                    os.system("rm " + cartoonized_img_name)
-                    cartoonized_img_name = generate_signed_url(output_uri)
+                # if not opts["run_local"]:
+                #     output_uri = upload_blob("cartoonized_images", cartoonized_img_name, img_name + ".jpg", content_type='image/jpg')
+                #     os.system("rm " + cartoonized_img_name)
+                #     cartoonized_img_name = generate_signed_url(output_uri)
                 
                 return render_template("index_cartoonized.html", 
                                        cartoonized_image=cartoonized_img_name,
